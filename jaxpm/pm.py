@@ -42,8 +42,10 @@ def pm_forces(positions,
         field = paint_fn(positions)
         delta_k = fft3d(field)
     elif jnp.isrealobj(delta):
+        field = None
         delta_k = fft3d(delta)
     else:
+        field = None
         delta_k = delta
 
     kvec = fftk(delta_k)
@@ -55,7 +57,7 @@ def pm_forces(positions,
         read_fn(ifft3d(-gradient_kernel(kvec, i) * pot_k),positions
         ) for i in range(3)], axis=-1) # yapf: disable
 
-    return forces
+    return forces, field
 
 
 def lpt(cosmo,
@@ -77,7 +79,7 @@ def lpt(cosmo,
     a = jnp.atleast_1d(a)
     E = jnp.sqrt(jc.background.Esqr(cosmo, a))
     delta_k = fft3d(initial_conditions)
-    initial_force = pm_forces(particles,
+    initial_force, _ = pm_forces(particles,
                               delta=delta_k,
                               paint_absolute_pos=paint_absolute_pos,
                               halo_size=halo_size,
@@ -109,7 +111,7 @@ def lpt(cosmo,
                 delta2 -= ifft3d(nabla_i_nabla_j * pot_k)**2
 
         delta_k2 = fft3d(delta2)
-        init_force2 = pm_forces(particles,
+        init_force2, _ = pm_forces(particles,
                                 delta=delta_k2,
                                 paint_absolute_pos=paint_absolute_pos,
                                 halo_size=halo_size,
@@ -155,11 +157,11 @@ def make_ode_fn(mesh_shape,
         """
         pos, vel = state
 
-        forces = pm_forces(pos,
+        forces, field = pm_forces(pos,
                            mesh_shape=mesh_shape,
                            paint_absolute_pos=paint_absolute_pos,
                            halo_size=halo_size,
-                           sharding=sharding) * 1.5 * cosmo.Omega_m
+                           sharding=sharding)
 
         # Computes the update of position (drift)
         dpos = 1. / (a**3 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * vel
@@ -171,6 +173,60 @@ def make_ode_fn(mesh_shape,
 
     return nbody_ode
 
+def make_avera_ode(mesh_shape,
+                     paint_absolute_pos=True,
+                     halo_size=0,
+                     sharding=None):
+    """
+    Avera ODE function for N-body simulations.
+    """
+
+    def Esqr_EdS(cosmo, a):
+        return (
+            cosmo.Omega_m * jnp.power(a, -3)
+            + cosmo.Omega_k * jnp.power(a, -2)
+        )
+
+    def avera_ode(state, a, cosmo):
+        """
+        state is a tuple (position, velocities)
+        """
+        pos, vel, a_avg = state
+
+        forces, field = pm_forces(pos,
+                           mesh_shape=mesh_shape,
+                           paint_absolute_pos=paint_absolute_pos,
+                           halo_size=halo_size,
+                           sharding=sharding)
+
+        E = jnp.sqrt(Esqr_EdS(cosmo, a))
+
+        # TODO: when particle number is different from cell count we need
+        #       to normalize here
+        cosmo_local = jc.parameters.EdS(Omega_c=field, Omega_b=0, Omega_k=1 - field)
+        E_local = jnp.sqrt(Esqr_EdS(cosmo_local, a_avg))
+
+        # Calculate local a and average a and average Omega_m
+        Omega_m_avg = cosmo.Omega_m * a_avg**3 / a**3
+        forces *= 1.5 * Omega_m_avg
+
+        pass
+
+        cosmo_avg = jc.parameters.EdS(Omega_c=Omega_m_avg, Omega_b=0, Omega_k=1 - Omega_m_avg)
+        E_avg = jnp.sqrt(Esqr_EdS(cosmo_avg, a_avg))
+
+        # Computes the update of position (drift)
+        dpos = 1. / (a * a_avg**2 * E_avg) * vel
+
+        # Computes the update of velocity (kick)
+        dvel = 1. / (a * a_avg * E_avg) * forces
+
+        # Calculate the update of the local scale factor
+        da_avg = a_avg * jnp.mean(E_local) / (a * E)
+
+        return dpos, dvel, da_avg
+
+    return avera_ode
 
 def make_diffrax_ode(mesh_shape,
                      paint_absolute_pos=True,
@@ -184,11 +240,13 @@ def make_diffrax_ode(mesh_shape,
         pos, vel = state
         cosmo = args
 
-        forces = pm_forces(pos,
+        forces, field = pm_forces(pos,
                            mesh_shape=mesh_shape,
                            paint_absolute_pos=paint_absolute_pos,
                            halo_size=halo_size,
-                           sharding=sharding) * 1.5 * cosmo.Omega_m
+                           sharding=sharding)
+
+        forces *= 1.5 * cosmo.Omega_m
 
         # Computes the update of position (drift)
         dpos = 1. / (a**3 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * vel

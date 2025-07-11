@@ -294,7 +294,7 @@ def test_fwd_rev_gradients(cosmo, pdims):
         out_sharding = get_fft_output_sharding(sharding)
         delta_k = jax.lax.with_sharding_constraint(delta_k, out_sharding)
 
-        initial_force = pm_forces(particles,
+        initial_force, _ = pm_forces(particles,
                                   delta=delta_k,
                                   paint_absolute_pos=paint_absolute_pos,
                                   halo_size=halo_size,
@@ -372,7 +372,7 @@ def test_vmap(cosmo, pdims):
         out_sharding = get_fft_output_sharding(sharding)
         delta_k = jax.lax.with_sharding_constraint(delta_k, out_sharding)
 
-        initial_force = pm_forces(particles,
+        initial_force, _ = pm_forces(particles,
                                   delta=delta_k,
                                   paint_absolute_pos=paint_absolute_pos,
                                   halo_size=halo_size,
