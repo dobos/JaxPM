@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 import jax_cosmo as jc
 
@@ -41,6 +42,11 @@ def pm_forces(positions,
     if delta is None:
         field = paint_fn(positions)
         delta_k = fft3d(field)
+
+        # jax.debug.print("avg field {}", field.mean())
+        # jax.debug.print("med field {}", jnp.median(field))
+        # jax.debug.breakpoint()
+
     elif jnp.isrealobj(delta):
         field = None
         delta_k = fft3d(delta)
@@ -164,14 +170,43 @@ def make_ode_fn(mesh_shape,
                            sharding=sharding)
 
         # Computes the update of position (drift)
+        # dpos: comoving velocity
+        # vel = dpos / da = dpos / dt * dt / da
+        # dt / da = 1 / (a H) = 1 / (a H_0 E)
         dpos = 1. / (a**3 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * vel
 
         # Computes the update of velocity (kick)
+        # forces = G * m1 * m2 / r^2, where r is comoving distance
+        # dvel: physical acceleration
+        # acc = 
         dvel = 1. / (a**2 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * forces
 
         return dpos, dvel
 
     return nbody_ode
+
+def make_t_ode():
+    def Esqr_EdS(cosmo, a):
+        return (
+            cosmo.Omega_m * jnp.power(a, -3)
+            + cosmo.Omega_k * jnp.power(a, -2)
+        )
+
+    def t_ode(state, a, cosmo):
+        """
+        state is a tuple (position, velocities)
+        """
+        t = state
+
+        E = jnp.sqrt(Esqr_EdS(cosmo, a))
+
+        # From the analytic solution of EdS
+        # dt = 1 / (E * a)
+        dt = jnp.sqrt(a)
+
+        return dt
+
+    return t_ode
 
 def make_avera_ode(mesh_shape,
                      paint_absolute_pos=True,
@@ -182,16 +217,29 @@ def make_avera_ode(mesh_shape,
     """
 
     def Esqr_EdS(cosmo, a):
+
+        # Use jax.debug.print for printing inside JAX transformations
+        # jax.debug.print("cosmo.Omega_m: {}", cosmo.Omega_m)
+        # jax.debug.print("cosmo.Omega_k: {}", cosmo.Omega_k)
+
+        # jax.debug.breakpoint()
+
         return (
             cosmo.Omega_m * jnp.power(a, -3)
             + cosmo.Omega_k * jnp.power(a, -2)
         )
+    
+    def Esqr_LCDM(cosmo, a):
+        return jc.background.Esqr(cosmo, a)
 
     def avera_ode(state, a, cosmo):
         """
         state is a tuple (position, velocities)
         """
-        pos, vel, a_avg = state
+        pos, vel, a_avera, t = state
+
+        # jax.debug.print('{} {}', a, a_avera)
+        # jax.debug.breakpoint()
 
         forces, field = pm_forces(pos,
                            mesh_shape=mesh_shape,
@@ -199,32 +247,73 @@ def make_avera_ode(mesh_shape,
                            halo_size=halo_size,
                            sharding=sharding)
 
-        E = jnp.sqrt(Esqr_EdS(cosmo, a))
-
         # TODO: when particle number is different from cell count we need
         #       to normalize here
+        # jax.debug.print("field: {}", field)
+        # jax.debug.breakpoint()
+
+        # Cosmology as a function of position in every avera cell
         cosmo_local = jc.parameters.EdS(Omega_c=field, Omega_b=0, Omega_k=1 - field)
-        E_local = jnp.sqrt(Esqr_EdS(cosmo_local, a_avg))
+        E_local = jnp.sqrt(Esqr_EdS(cosmo_local, a_avera))
+        # E_avg = jnp.mean(E_local)
+
+        # cosmo_median = jc.parameters.EdS(Omega_c=jnp.median(field), Omega_b=0, Omega_k=1 - jnp.median(field))
+        # E_median = jnp.sqrt(Esqr_EdS(cosmo_median, a_avera))
+
+        # jax.debug.print("E_local median: {}", jnp.median(E_local))
+        # jax.debug.print("E: {}", E)
+        # jax.debug.print("E median: {}", E_median)
+        # jax.debug.breakpoint()
 
         # Calculate local a and average a and average Omega_m
-        Omega_m_avg = cosmo.Omega_m * a_avg**3 / a**3
-        forces *= 1.5 * Omega_m_avg
+        # Omega_m_avera = cosmo.Omega_m * a_avera**3 / a**3
+        # Omega_m_avera = cosmo.Omega_m * a**3 / a_avera**3
+        # forces *= 1.5 * Omega_m_avera
 
-        pass
+        # def breakpoint_on_condition(x):
+        #     c = jnp.any(x > 0.8)
+        #     def false_fn(x):
+        #         pass
+        #     def true_fn(x):
+        #         jax.debug.print("a: {}, a_avg: {}, E: {}, E_local: {}", a, a_avg, E, jnp.median(E_local))
+        #         jax.debug.print("Omega_m: {}", cosmo.Omega_m)
+        #         jax.debug.print("Omega_m_avg: {}", Omega_m_avg)
+        #         jax.debug.breakpoint()
+        #     jax.lax.cond(c, true_fn, false_fn, x)
 
-        cosmo_avg = jc.parameters.EdS(Omega_c=Omega_m_avg, Omega_b=0, Omega_k=1 - Omega_m_avg)
-        E_avg = jnp.sqrt(Esqr_EdS(cosmo_avg, a_avg))
+        # breakpoint_on_condition(a)
+
+        # cosmo_avg = jc.parameters.EdS(Omega_c=Omega_m_avera, Omega_b=0, Omega_k=1 - Omega_m_avera)
+        # E_avg = jnp.sqrt(Esqr_EdS(cosmo_avg, a_avera))
+
+        E = jnp.sqrt(Esqr_EdS(cosmo, a))
 
         # Computes the update of position (drift)
-        dpos = 1. / (a * a_avg**2 * E_avg) * vel
+        dpos = 1. / (a_avera**2 * a * E) * vel
 
         # Computes the update of velocity (kick)
-        dvel = 1. / (a * a_avg * E_avg) * forces
+        dvel = 1. / (a_avera * a * E) * forces
 
         # Calculate the update of the local scale factor
-        da_avg = a_avg * jnp.mean(E_local) / (a * E)
+        # we could averate Esqr and then take sqrt?
+        da_avera = a_avera * jnp.mean(E_local) / (a * E)
 
-        return dpos, dvel, da_avg
+        # da_local = a_avg * E_local / (a * E)**2
+        # a_local = a_avg + da_local
+        # da_avg = jnp.power(jnp.mean(a_local ** 3) - a_avg**3, 1/3)
+
+        # jax.debug.print("E_local: {} {}", E_local.min(), E_local.max())
+        # jax.debug.breakpoint()
+
+        # jax.debug.breakpoint()
+
+        # From the analytic solution of EdS
+        dt = 1 / (E * a)
+
+        # jax.debug.print("da_avg: {}, dt: {}", da_avg, dt)
+        # jax.debug.breakpoint()
+
+        return dpos, dvel, da_avera, dt
 
     return avera_ode
 
