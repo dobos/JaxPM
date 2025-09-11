@@ -169,6 +169,8 @@ def make_ode_fn(mesh_shape,
                            halo_size=halo_size,
                            sharding=sharding)
 
+        jax.debug.print("field: {} {} {} {} {}", a, jnp.median(field), jnp.mean(field), jnp.min(field), jnp.max(field))
+
         # Computes the update of position (drift)
         # dpos: comoving velocity
         # vel = dpos / da = dpos / dt * dt / da
@@ -197,6 +199,7 @@ def make_t_ode():
         state is a tuple (position, velocities)
         """
         t = state
+        jax.debug.print("a: {}, t: {}", a, t)
 
         E = jnp.sqrt(Esqr_EdS(cosmo, a))
 
@@ -232,7 +235,7 @@ def make_avera_ode(mesh_shape,
     def Esqr_LCDM(cosmo, a):
         return jc.background.Esqr(cosmo, a)
 
-    def avera_ode(state, a, cosmo):
+    def avera_ode(state, a, a_init, cosmo):
         """
         state is a tuple (position, velocities)
         """
@@ -251,11 +254,24 @@ def make_avera_ode(mesh_shape,
         #       to normalize here
         # jax.debug.print("field: {}", field)
         # jax.debug.breakpoint()
+        # jax.debug.print("field: {} {} {} {} {}", a, jnp.median(field), jnp.mean(field), jnp.min(field), jnp.max(field))
 
         # Cosmology as a function of position in every avera cell
-        cosmo_local = jc.parameters.EdS(Omega_c=field, Omega_b=0, Omega_k=1 - field)
-        E_local = jnp.sqrt(Esqr_EdS(cosmo_local, a_avera))
+        # Calculate the local Omega in terms of the critical density at initial conditions
+        omega_init = (field - 1.) / (1. - field + field / a_init) + 1.
+        cosmo_local = jc.parameters.EdS(Omega_c=omega_init, Omega_b=0, Omega_k=1 - omega_init)
+        Esqr_local = Esqr_EdS(cosmo_local, a_avera / a_init) * Esqr_EdS(cosmo, a_init)
         # E_avg = jnp.mean(E_local)
+
+        # Esqr_local < 0 means the region has virialized so we avoid them
+        Esqr_local = jnp.where(Esqr_local > 0, Esqr_local, 0.)
+
+        # Count cells with Esqr_local == 0
+        # n_virialized = jnp.count_nonzero(Esqr_local < 0.1)
+        n_virialized = jnp.count_nonzero(Esqr_local)
+
+        # jax.debug.print("Esqr_local: {} {} {} {} {}", a, jnp.median(Esqr_local), jnp.mean(Esqr_local), jnp.min(Esqr_local), jnp.max(Esqr_local))
+        jax.debug.print("a, a_avera: {} {} {}", a, a_avera, n_virialized)
 
         # cosmo_median = jc.parameters.EdS(Omega_c=jnp.median(field), Omega_b=0, Omega_k=1 - jnp.median(field))
         # E_median = jnp.sqrt(Esqr_EdS(cosmo_median, a_avera))
@@ -296,7 +312,7 @@ def make_avera_ode(mesh_shape,
 
         # Calculate the update of the local scale factor
         # we could averate Esqr and then take sqrt?
-        da_avera = a_avera * jnp.mean(E_local) / (a * E)
+        da_avera = a_avera * jnp.mean(jnp.sqrt(Esqr_local)) / (a * E)
 
         # da_local = a_avg * E_local / (a * E)**2
         # a_local = a_avg + da_local
