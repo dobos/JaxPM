@@ -263,15 +263,16 @@ def make_avera_ode(mesh_shape,
         Esqr_local = Esqr_EdS(cosmo_local, a_avera / a_init) * Esqr_EdS(cosmo, a_init)
         # E_avg = jnp.mean(E_local)
 
+        # Count cells with Esqr_local == 0
+        # n_virialized = jnp.count_nonzero(Esqr_local < 0.1)
+        n_virialized = jnp.count_nonzero(jnp.where(Esqr_local < 0, 1., 0.))
+        n_total = jnp.size(Esqr_local)
+
         # Esqr_local < 0 means the region has virialized so we avoid them
         Esqr_local = jnp.where(Esqr_local > 0, Esqr_local, 0.)
 
-        # Count cells with Esqr_local == 0
-        # n_virialized = jnp.count_nonzero(Esqr_local < 0.1)
-        n_virialized = jnp.count_nonzero(Esqr_local)
-
         # jax.debug.print("Esqr_local: {} {} {} {} {}", a, jnp.median(Esqr_local), jnp.mean(Esqr_local), jnp.min(Esqr_local), jnp.max(Esqr_local))
-        jax.debug.print("a, a_avera: {} {} {}", a, a_avera, n_virialized)
+        jax.debug.print("a, a_avera, {}, {}, {}, {}", a, a_avera, n_virialized, n_virialized / n_total)
 
         # cosmo_median = jc.parameters.EdS(Omega_c=jnp.median(field), Omega_b=0, Omega_k=1 - jnp.median(field))
         # E_median = jnp.sqrt(Esqr_EdS(cosmo_median, a_avera))
